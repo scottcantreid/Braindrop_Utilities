@@ -1,32 +1,22 @@
-import timeit
-import os.path
 import sys
 sys.path.append('/home/scottreid/Calibration')
-import TestEquityM106 as tst
 import numpy as np
-import pylab
-import seaborn
-seaborn.set_style("white")
-import scipy.interpolate
-from IPython.display import clear_output
 import matplotlib.pyplot as plt
 from os import system, name
 import time
-
+from pyModbusTCP.client import ModbusClient
+from struct import *
 from pystorm.hal import HAL
-from pystorm.PyDriver import bddriver as bd
 from pystorm.hal.net_builder import NetBuilder
 from pystorm.hal.calibrator import Calibrator, PoolSpec
 from pystorm.hal import data_utils
 from pystorm.hal.run_control import RunControl
 from pystorm.hal.neuromorph import graph
 
+
 """
 Temperature Control
 """
-from pyModbusTCP.client import ModbusClient
-from struct import *
-
 def ints_to_float(tup):
     mypack = pack('>HH',tup[0],tup[1])
     return unpack('>f', mypack)
@@ -83,6 +73,10 @@ def test_connection(c):
     reg = c.read_holding_registers(0)
     c.close()
     return reg is not None
+
+"""
+Measuring Tuning Curves, Decoding Static Functions
+"""
 
 def initialize_and_calibrate(Y, X, LY, LX, Din=1, twiddle = True):
     hal = HAL()
