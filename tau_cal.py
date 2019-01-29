@@ -10,9 +10,6 @@ from pystorm.hal import HAL, parse_hal_spikes, bin_tags_spikes
 from pystorm.hal.neuromorph import graph # to describe HAL/neuromorph network
 from pystorm.PyDriver import bddriver as bd # expose Driver functions directly for debug (cool!)
 
-from utils.file_io import load_txt_data, set_data_dir
-DATA_DIR = set_data_dir(__file__)
-
 """
 Measuring Synapses
 """
