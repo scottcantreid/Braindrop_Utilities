@@ -15,7 +15,7 @@ Measuring Synapses
 """
 ###Copying Alex's Code from BIS syn-tau.py
 
-
+DATA_DIR = 'data/'
 ###########################################
 # pool size parameters
 
@@ -308,3 +308,107 @@ def run_tau_exp(HAL, num_trials, syn_lk):
             all_binned_spikes[(syn_y, syn_x)].append(binned_spikes)
 
     return all_binned_spikes, all_linear
+
+def collapse_multitrial(As):
+    A = np.zeros_like(As[0])
+    for A_single in As:
+        A += A_single
+    return A
+
+def get_syn_responses(A, linear):
+    S_yx = np.zeros((TILES_Y, TILES_X, A.shape[1]))
+    A_yx = A.reshape((TILES_Y * TILE_XY, TILES_X * TILE_XY, A.shape[1]))
+    A_yx_lin = (A_yx.transpose(2, 0, 1) * linear).transpose(1, 2, 0)
+    for ty in range(TILES_Y):
+        for tx in range(TILES_X):
+            for sample_idx in range(A_yx_lin.shape[2]):
+                S_yx[ty, tx, sample_idx] = np.sum(A_yx_lin[ty*TILE_XY : (ty+1)*TILE_XY, tx*TILE_XY : (tx+1)*TILE_XY, sample_idx])
+    return S_yx
+
+def combine_quadrant_responses(S_yxs, syn_yxs):
+    assert(S_yxs[0].shape[0] == TILES_Y)
+    assert(S_yxs[0].shape[1] == TILES_X)
+    assert(len(syn_yxs) == len(S_yxs))
+    assert(len(syn_yxs) == 4)
+    Sall_yx = np.zeros((TILES_Y * 2, TILES_X * 2, S_yxs[0].shape[2]))
+    for syn_yx, S_yx in zip(syn_yxs, S_yxs):
+        syn_y, syn_x = syn_yx
+        Sall_yx[syn_y::2, syn_x::2, :] = S_yx
+    return Sall_yx
+
+def respfunc(t, tau):
+    return 1 - np.exp(-t / tau)
+
+def fit_taus(S_yxs, thold0, thold1, plot=False, plot_fname_pre=None, pyx=8):
+
+    from scipy.optimize import curve_fit
+
+    taus = np.zeros((S_yxs.shape[0], S_yxs.shape[1]))
+    Z_mins = np.zeros_like(taus)
+    Z_maxs = np.zeros_like(taus)
+
+    idx_start = int(np.round(thold0 / (thold0 + thold1) * S_yxs.shape[2]))
+    len_Z_on = S_yxs.shape[2] - idx_start
+    
+    Z_ons = np.zeros((S_yxs.shape[0], S_yxs.shape[1], len_Z_on))
+    curves = np.zeros_like(Z_ons)
+    
+    for ty in range(S_yxs.shape[0]):
+        for tx in range(S_yxs.shape[1]):
+            Z = S_yxs[ty,tx,:]
+            
+            # window and renormalize Z so it looks like a standard
+            # saturating exponential going 0 -> 1
+
+            # window
+            idx_start = int(np.round(thold0 / (thold0 + thold1) * len(Z)))
+            Z_off = Z[:idx_start]
+            Z_on = Z[idx_start:]
+    
+            t = np.linspace(0, thold1, len(Z_on))
+
+            # shift and scale
+            Z_min = np.mean(Z_off)
+            Z_scaled = Z_on - Z_min
+            # assume signal is settled in second half of Z_on
+            Z_max = np.mean(Z_scaled[Z_scaled.shape[0] // 2:]) 
+            Z_scaled = Z_scaled / Z_max
+            Z_mins[ty, tx] = Z_min
+            Z_maxs[ty, tx] = Z_max
+            
+            mean_off = np.mean(Z_off)
+            Z_on_settled = Z_on[Z_on.shape[0] // 2:]
+            mean_on = np.mean(Z_on_settled)
+
+            # if the synapse's (linear) neurons actually responded
+            if np.abs(mean_on - mean_off) > .05 * mean_off: 
+
+                popt, pcov = curve_fit(respfunc, t, Z_scaled)
+                taus[ty, tx] = popt[0]
+                
+                curves[ty, tx, :] = Z_max * respfunc(t, taus[ty, tx]) + Z_min
+                Z_ons[ty, tx] = Z_on
+                
+            # if they didn't don't try to estimate tau
+            else:
+                taus[ty, tx] = np.nan
+            
+    if plot:
+        # histogram of taus
+        plt.figure()
+        taus_hist = taus[~np.isnan(taus)]
+        plt.hist(taus_hist.flatten(), bins=20)
+        plt.title('tau distribution\nmean = ' + str(np.mean(taus_hist)) + ' std = ' + str(np.std(taus_hist)))
+        plt.savefig(plot_fname_pre + '_tau_hist.png')
+
+        # imshow of tau locations
+        plt.figure()
+        plt.imshow(taus)
+        plt.savefig(plot_fname_pre + '_tau_locations.png')
+        plt.colorbar()
+
+        # step response curve fits
+        plot_yx_data([Z_ons[:pyx, :pyx, :], curves[:pyx, :pyx, :]], mask=~np.isnan(taus), t=t)
+        plt.savefig(plot_fname_pre + '_curve_fits.png')
+
+    return taus
