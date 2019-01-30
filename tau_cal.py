@@ -15,7 +15,6 @@ Measuring Synapses
 """
 ###Copying Alex's Code from BIS syn-tau.py
 
-DATA_DIR = 'data/'
 ###########################################
 # pool size parameters
 
@@ -60,19 +59,23 @@ UPSTREAM_RES_NS = 10000000 # ns = 1 ms, targeting 100 ms tau, so this is 100 tim
 
 ###########################################
 
+def initialize_and_calibrate(HAL):
+	# Run this at the very beginning at room temperature to correctly access the calibration tables
+	
+	bad_syn = HAL.get_calibration('synapse', 'high_bias_magnitude').values.reshape((HEIGHT//2, WIDTH//2))
+	biases = BIAS_TWIDDLE
+	return bad_syn, biases
 
 def open_all_diff_cuts(HAL):
     # connect diffusor around pools
     for tile_id in range(256):
         HAL.driver.OpenDiffusorAllCuts(CORE_ID, tile_id)
 
-def map_network(HAL, syn_idx, biases, syn_lk):
+def map_network(HAL, syn_idx, bad_syn, biases, syn_lk):
 
     HAL.set_time_resolution(DOWNSTREAM_RES_NS, UPSTREAM_RES_NS)
     
     net = graph.Network("net")
-
-    bad_syn = HAL.get_calibration('synapse', 'high_bias_magnitude').values.reshape((HEIGHT//2, WIDTH//2))
 
     taps = [[]] # one dim, not that it matters
     for tile_x in range(TILES_X):
@@ -194,7 +197,7 @@ def process_baseline(f0, fhigh, fmax):
     return fired & not_sat
 
 # sweep which of the 4 synapses in the tile we use
-def run_tau_exp(HAL, num_trials, syn_lk):
+def run_tau_exp(HAL, syn_lk, num_trials, bad_syn, biases):
     all_binned_spikes = {}
     all_linear = {}
     for syn_y, syn_x in [(0,0), (0,1), (1,0), (1,1)]:
@@ -204,7 +207,7 @@ def run_tau_exp(HAL, num_trials, syn_lk):
         #############################################
         # assess linearity of neuron responses:
         # measure at 0, FMAX/2, and FMAX
-        net, inp = map_network(HAL, syn_idx, BIAS_TWIDDLE, syn_lk)
+        net, inp = map_network(HAL, syn_idx, bad_syn, biases, syn_lk)
 
         # f(0)
         start_collection(HAL)
