@@ -182,59 +182,14 @@ def compute_tile_medians(nrn_cts):
     return med
 
 def process_baseline(f0, fhigh, fmax):
-    fig, axes = plt.subplots(2, 3, figsize=(10, 10))
 
-    # f0 stuff
-    ax = axes[0, 0]
-    ax.set_title("log10(f0 + 1)")
-    im = ax.imshow(np.log(f0 + 1))
-    fig.colorbar(im, ax=ax)
-
-    ax = axes[1, 0]
     fired = f0 > FMIN_KEEP
-    fired_frac = np.sum(fired) / N
-    ax.set_title("{0:.4f}".format(fired_frac) + " of neurons f0 > " + str(FMIN_KEEP) + "Hz")
-    im = ax.imshow(fired)
-
-
-    # fhigh/fmax stuff
-    # only pay attention to bifurcated neurons
-    ax = axes[0, 1]
-    ax.set_title("(fhigh - f0) / (fmax - f0)")
-    
-    fdiff_frac = (fhigh - f0) / (fmax - f0) # just eat the arithmetic errors for fmax=f0=0
-
-    # clip data for the plot
-    fdiff_frac[fdiff_frac > .5 + .05] = .5 + .05
-    fdiff_frac[fdiff_frac < .5 - .05] = .5 - .05
-
-    im = ax.imshow(fdiff_frac)
-    fig.colorbar(im, ax=ax)
-
-    ax = axes[1, 1]
     not_sat = abs(fdiff_frac - .5) < FMAX_TOL_KEEP
-    not_sat_frac = np.sum(not_sat) / N
-    ax.set_title("{0:.4f}".format(not_sat_frac) + " of neurons not saturated")
-    im = ax.imshow(not_sat)
-
-    # fmax stuff
-    ax = axes[0, 2]
-    ax.set_title("log10(fmax + 1)")
-    im = ax.imshow(np.log(fmax + 1))
-    fig.colorbar(im, ax=ax)
-
-    ax = axes[1, 2]
-    ax.set_title("log10(fmax- f0 + 1)")
-    im = ax.imshow(np.log(fmax - f0 + 1))
-    fig.colorbar(im, ax=ax)
-
     total_good = np.sum(fired & not_sat)
     total_weird = np.sum(~fired & not_sat)
     print("frac. fired = ", "{0:.4f}".format(np.sum(fired) / N))
     print("frac. fired and not saturated = ", "{0:.4f}".format(total_good / N))
     print("frac. NOT fired and not saturated = ", "{0:.4f}".format(total_weird / N))
-
-    plt.savefig(DATA_DIR + 'syn_tau_baseline.png')
 
     return fired & not_sat
 
@@ -412,3 +367,14 @@ def fit_taus(S_yxs, thold0, thold1, plot=False, plot_fname_pre=None, pyx=8):
         plt.savefig(plot_fname_pre + '_curve_fits.png')
 
     return taus
+
+def process_to_taus(all_binned, all_linear):
+	collapsed_As = [collapse_multitrial(all_binned[k]) for k in all_binned]
+	syn_yx_list = [k for k in all_binned]
+	linear_list = [all_linear[k] for k in all_binned]
+
+	# combine data from quadrants
+	S_yxs = [get_syn_responses(A, linear) for A, linear in zip(collapsed_As, linear_list)]
+	Sall_yx = combine_quadrant_responses(S_yxs, syn_yx_list)
+	taus = fit_taus(Sall_yx, THOLD0, THOLD1, plot=False)
+	return taus
