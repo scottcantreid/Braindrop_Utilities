@@ -61,9 +61,10 @@ UPSTREAM_RES_NS = 10000000 # ns = 1 ms, targeting 100 ms tau, so this is 100 tim
 
 def initialize_and_calibrate(HAL):
 	# Run this at the very beginning at room temperature to correctly access the calibration tables
-	
+
 	bad_syn = HAL.get_calibration('synapse', 'high_bias_magnitude').values.reshape((HEIGHT//2, WIDTH//2))
 	biases = BIAS_TWIDDLE
+	#TODO: Implement a twiddle bias search method to increase neuron yield.
 	return bad_syn, biases
 
 def open_all_diff_cuts(HAL):
