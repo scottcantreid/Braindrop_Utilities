@@ -55,7 +55,7 @@ BIAS_TWIDDLE = 1
 
 # rate-based analysis, don't need terribly fine resolution
 DOWNSTREAM_RES_NS = 10000 # ns
-UPSTREAM_RES_NS = 10000000 # ns = 1 ms, targeting 100 ms tau, so this is 100 times finer
+UPSTREAM_RES_NS = 5000000 # ns = 0.5 ms, targeting 100 ms tau, so this is 200 times finer
 
 ###########################################
 
@@ -188,6 +188,7 @@ def compute_tile_medians(nrn_cts):
 def process_baseline(f0, fhigh, fmax):
 
     fired = f0 > FMIN_KEEP
+    fdiff_frac = (fhigh - f0) / (fmax - f0)
     not_sat = abs(fdiff_frac - .5) < FMAX_TOL_KEEP
     total_good = np.sum(fired & not_sat)
     total_weird = np.sum(~fired & not_sat)
