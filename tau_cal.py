@@ -47,15 +47,15 @@ THOLD0 = .5 # how long to hold 0 value before step
 THOLD1 = 1 # how long to hold 1 value after step (waiting for synapse to charge up)
 
 # should be enough to make almost everyone bifurcate
-DAC_BIAS_SCALE = 1 # avoid > 10
-BIAS_TWIDDLE = 1
+DAC_BIAS_SCALE = 8 # avoid > 10
+BIAS_TWIDDLE = 3
 
 ###########################################
 # misc driver parameters
 
 # rate-based analysis, don't need terribly fine resolution
 DOWNSTREAM_RES_NS = 10000 # ns
-UPSTREAM_RES_NS = 5000000 # ns = 0.5 ms, targeting 100 ms tau, so this is 200 times finer
+UPSTREAM_RES_NS = 1000000 # ns = 1 ms, targeting 100 ms tau, so this is 100 times finer
 
 ###########################################
 
