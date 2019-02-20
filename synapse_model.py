@@ -34,3 +34,22 @@ def synapse_step_response(t, tau_s, tau_p, eps):
     resp[case1] += resp1[case1]
     resp[case2] += resp2[case2]
     return resp
+
+def mismatch(T, g1, g2):
+    return np.exp(-g1 * 1/T - g2)
+
+def syn_temp_model(T, kappa, g01, g11, g12, g21, g22):
+    L0 = mismatch(T, g01, 0)
+    L1 = mismatch(T, g11, g12)
+    L2 = mismatch(T, g21, g22)
+    return kappa*L0/(1 + L1 - L2)
+
+def first_order_model(t, tau):
+    return 1 - np.exp(-t/tau)
+
+def thermal_fo_step(x, kappa, g01, g11, g12, g21, g22):
+    t, T = x
+    tau = syn_model(T, kappa, g01, g11, g12, g21, g22)
+    response = first_order_model(t, tau)
+    return response
+
