@@ -47,8 +47,8 @@ THOLD0 = .5 # how long to hold 0 value before step
 THOLD1 = 1 # how long to hold 1 value after step (waiting for synapse to charge up)
 
 # should be enough to make almost everyone bifurcate
-DAC_BIAS_SCALE = 8 # avoid > 10
-BIAS_TWIDDLE = 3
+DAC_BIAS_SCALE = 5 # avoid > 10
+BIAS_TWIDDLE = 1
 
 ###########################################
 # misc driver parameters
