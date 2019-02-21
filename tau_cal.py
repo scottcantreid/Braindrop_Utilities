@@ -383,3 +383,27 @@ def process_to_taus(all_binned, all_linear):
 	Sall_yx = combine_quadrant_responses(S_yxs, syn_yx_list)
 	taus = fit_taus(Sall_yx, THOLD0, THOLD1, plot=False)
 	return taus
+
+def get_responses(all_binned, all_linear, thold0= THOLD0, thold1 = THOLD1):
+	collapsed_As = [collapse_multitrial(all_binned[k]) for k in all_binned]
+	syn_yx_list = [k for k in all_binned]
+	linear_list = [all_linear[k] for k in all_binned]
+
+	# combine data from quadrants
+	S_yxs = [get_syn_responses(A, linear) for A, linear in zip(collapsed_As, linear_list)]
+	Sall_yx = combine_quadrant_responses(S_yxs, syn_yx_list)
+
+	S = Sall_yx.reshape(32*32, -1)
+	
+	idx_start = int(np.round(thold0 / (thold0 + thold1) * S.shape[1]))
+	Z_off = S[:,:idx_start]
+	Z_on = S[:,idx_start:]
+    
+	t = np.linspace(0, thold1, Z_on.shape[1])
+
+	Z_min = np.mean(Z_off, axis = 1).reshape(-1,1)
+	Z_scaled = Z_on - Z_min
+	# assume signal is settled in second half of Z_on
+	Z_max = np.mean(Z_scaled[:,Z_scaled.shape[1] // 2:], axis = 1).reshape(-1,1)
+	Z_scaled = Z_scaled / Z_max
+	return Z_scaled
