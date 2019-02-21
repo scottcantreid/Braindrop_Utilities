@@ -107,3 +107,25 @@ def draw_step(N_T = 10, noise = 0):
 
 	step = thermal_fo_step((t, T), *params) + np.random.randn(N*N_T)*noise
 	return step, T, t
+
+def fit_response(step, t, T, N_trial = 10):
+	best_fit = []
+    best_resid = np.infty
+    def varying_temp_fo_step(x, a0, a1, b0, b1, kappa, g01, g02, g11, g12):
+    	t, T = x
+    	return a0 + a1*T + (b0 + b1*T)*simpler_fo_step(x, kappa, g01, g02, g11, g12)
+
+    for _ in range(N_trial):
+        try:
+            fit, cov = varying_temp_fo_step(simpler_fo_step, (t,T), step, 
+            	p0 = [1,1,1,1].extend(draw_simpler_params()))
+            fitter = fit[4:]
+        except RuntimeError:
+            pass
+        else:
+            model = varying_temp_fo_step((t, T), *fit)
+            res = np.linalg.norm(model - step)
+            if (res < best_resid):
+                best_resid = res
+                best_fit = fitter
+    return best_fit
