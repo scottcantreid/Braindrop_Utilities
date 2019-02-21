@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.optimize import curve_fit
 
 """
 These impulse and step responses are derived from the circuit model of the Braindrop synapses.
@@ -49,7 +50,60 @@ def first_order_model(t, tau):
 
 def thermal_fo_step(x, kappa, g01, g11, g12, g21, g22):
     t, T = x
-    tau = syn_model(T, kappa, g01, g11, g12, g21, g22)
+    tau = syn_temp_model(T, kappa, g01, g11, g12, g21, g22)
     response = first_order_model(t, tau)
     return response
 
+def simpler_syn(T, kappa, g01, g02, g11, g12):
+    return kappa /(1 + mismatch(T, g01, g02) - mismatch(T, g11, g12))
+
+def simpler_fo_step(x, kappa, g01, g02, g11, g12):
+    t, T = x
+    tau = simpler_syn(T, kappa, g01, g02, g11, g12)
+    response = first_order_model(t, tau)
+    return response
+
+def draw_simpler_params():
+    kappa = 1
+    g01 = np.random.randn()*200
+    g02 = np.random.randn()*3 - 3
+    g11 = np.random.randn()*200
+    g12 = np.random.randn()*3 + 3
+    return kappa, g01, g02, g11, g12
+
+def simple_thermal_step_fit(step, t, T, N_trial = 10):
+    best_fit = []
+    best_resid = np.infty
+    for _ in range(N_trial):
+        try:
+            fit, cov = curve_fit(simpler_fo_step, (t,T), step, p0 = draw_simpler_params())
+        except RuntimeError:
+            pass
+        else:
+            model = simpler_fo_step((t, T), *fit)
+            res = np.linalg.norm(model - step)
+            if (res < best_resid):
+                best_resid = res
+                best_fit = fit
+    return best_fit
+
+def draw_params():
+    kappa = 1
+    g01 = np.random.randn()*200
+    g11 = np.random.randn()*200
+    g12 = np.random.randn()*3 - 3
+    g21 = np.random.randn()*200
+    g22 = np.random.randn()*3 + 3
+    return kappa, g01, g11, g12, g21, g22
+
+def draw_step(N_T = 10, noise = 0):
+	T = np.linspace(300, 350, N_T)
+	N = 1000
+
+	params = draw_params()
+	t = np.linspace(0, 2, N)
+	t = np.array(list(t)*N_T)
+	T = np.array([[T[i]]*N for i in range(N_T)]).flatten()
+
+	step = thermal_fo_step((t, T), *params) + np.random.randn(N*N_T)*noise
+	return step, T, t
