@@ -49,6 +49,7 @@ THOLD1 = 1 # how long to hold 1 value after step (waiting for synapse to charge 
 # should be enough to make almost everyone bifurcate
 DAC_BIAS_SCALE = 5 # avoid > 10
 BIAS_TWIDDLE = 1
+GAIN_DIVISORS = 1
 
 ###########################################
 # misc driver parameters
@@ -64,15 +65,16 @@ def initialize_and_calibrate(HAL):
 
 	bad_syn = HAL.get_calibration('synapse', 'high_bias_magnitude').values.reshape((HEIGHT//2, WIDTH//2))
 	biases = BIAS_TWIDDLE
+    gain_divisors = GAIN_DIVISORS
 	#TODO: Implement a twiddle bias search method to increase neuron yield.
-	return bad_syn, biases
+	return bad_syn, biases, gain_divisors
 
 def open_all_diff_cuts(HAL):
     # connect diffusor around pools
     for tile_id in range(256):
         HAL.driver.OpenDiffusorAllCuts(CORE_ID, tile_id)
 
-def map_network(HAL, syn_idx, bad_syn, biases, syn_lk):
+def map_network(HAL, syn_idx, bad_syn, biases, gain_divisor, syn_lk):
 
     HAL.set_time_resolution(DOWNSTREAM_RES_NS, UPSTREAM_RES_NS)
     
@@ -94,7 +96,7 @@ def map_network(HAL, syn_idx, bad_syn, biases, syn_lk):
         taps[0] = taps[0][:-1]
 
     taps = (N, taps) 
-    pool = net.create_pool("pool", taps, biases=biases)
+    pool = net.create_pool("pool", taps, biases=biases, gain_divisors = gain_divisors)
     # don't bother with identity trick, flaky spikes from get_spikes are fine
 
     # create input, hook it up
@@ -198,8 +200,57 @@ def process_baseline(f0, fhigh, fmax):
 
     return fired & not_sat
 
+def collapse_multitrial(As):
+    A = np.zeros_like(As[0])
+    for A_single in As:
+        A += A_single
+    return A
+
+def get_syn_responses(A, linear):
+    S_yx = np.zeros((TILES_Y, TILES_X, A.shape[1]))
+    A_yx = A.reshape((TILES_Y * TILE_XY, TILES_X * TILE_XY, A.shape[1]))
+    A_yx_lin = (A_yx.transpose(2, 0, 1) * linear).transpose(1, 2, 0)
+    for ty in range(TILES_Y):
+        for tx in range(TILES_X):
+            for sample_idx in range(A_yx_lin.shape[2]):
+                S_yx[ty, tx, sample_idx] = np.sum(A_yx_lin[ty*TILE_XY : (ty+1)*TILE_XY, tx*TILE_XY : (tx+1)*TILE_XY, sample_idx])
+    return S_yx
+
+def combine_quadrant_responses(S_yxs, syn_yxs):
+    assert(S_yxs[0].shape[0] == TILES_Y)
+    assert(S_yxs[0].shape[1] == TILES_X)
+    assert(len(syn_yxs) == len(S_yxs))
+    assert(len(syn_yxs) == 4)
+    Sall_yx = np.zeros((TILES_Y * 2, TILES_X * 2, S_yxs[0].shape[2]))
+    for syn_yx, S_yx in zip(syn_yxs, S_yxs):
+        syn_y, syn_x = syn_yx
+        Sall_yx[syn_y::2, syn_x::2, :] = S_yx
+    return Sall_yx
+
+def get_responses(all_binned, all_linear, thold0= THOLD0, thold1 = THOLD1):
+    collapsed_As = [collapse_multitrial(all_binned[k]) for k in all_binned]
+    syn_yx_list = [k for k in all_binned]
+    linear_list = [all_linear[k] for k in all_binned]
+
+    # combine data from quadrants
+    S_yxs = [get_syn_responses(A, linear) for A, linear in zip(collapsed_As, linear_list)]
+    Sall_yx = combine_quadrant_responses(S_yxs, syn_yx_list)
+
+    S = Sall_yx.reshape(32*32, -1)
+
+    idx_start = int(np.round(thold0 / (thold0 + thold1) * S.shape[1]))
+    idx_end = int(S.shape[1]*0.9)
+
+    S_before = np.mean(S[:, :idx_start], axis = 1).reshape(-1,1)
+    S_after = np.mean(S[:, idx_end:], axis = 1).reshape(-1,1)
+
+    S_rescaled = (S - S_before)/(S_after - S_before)
+
+    t = np.linspace(-thold0, thold1, S.shape[1])
+    return t, S_rescaled
+
 # sweep which of the 4 synapses in the tile we use
-def run_tau_exp(HAL, syn_lk, num_trials, bad_syn, biases):
+def run_tau_exp(HAL, syn_lk, num_trials, bad_syn, biases, gain_divisors):
     all_binned_spikes = {}
     all_linear = {}
     for syn_y, syn_x in [(0,0), (0,1), (1,0), (1,1)]:
@@ -209,7 +260,7 @@ def run_tau_exp(HAL, syn_lk, num_trials, bad_syn, biases):
         #############################################
         # assess linearity of neuron responses:
         # measure at 0, FMAX/2, and FMAX
-        net, inp = map_network(HAL, syn_idx, bad_syn, biases, syn_lk)
+        net, inp = map_network(HAL, syn_idx, bad_syn, biases, gain_divisors, syn_lk)
 
         # f(0)
         start_collection(HAL)
@@ -267,143 +318,94 @@ def run_tau_exp(HAL, syn_lk, num_trials, bad_syn, biases):
             binned_spikes = end_collection_bin_spikes(HAL, start_ns, end_ns)
             all_binned_spikes[(syn_y, syn_x)].append(binned_spikes)
 
-    return all_binned_spikes, all_linear
+    t, resp = get_responses(all_binned, all_linear, thold0= THOLD0, thold1 = THOLD1)
 
-def collapse_multitrial(As):
-    A = np.zeros_like(As[0])
-    for A_single in As:
-        A += A_single
-    return A
+    return t, resp
 
-def get_syn_responses(A, linear):
-    S_yx = np.zeros((TILES_Y, TILES_X, A.shape[1]))
-    A_yx = A.reshape((TILES_Y * TILE_XY, TILES_X * TILE_XY, A.shape[1]))
-    A_yx_lin = (A_yx.transpose(2, 0, 1) * linear).transpose(1, 2, 0)
-    for ty in range(TILES_Y):
-        for tx in range(TILES_X):
-            for sample_idx in range(A_yx_lin.shape[2]):
-                S_yx[ty, tx, sample_idx] = np.sum(A_yx_lin[ty*TILE_XY : (ty+1)*TILE_XY, tx*TILE_XY : (tx+1)*TILE_XY, sample_idx])
-    return S_yx
+# def respfunc(t, tau):
+#     return 1 - np.exp(-t / tau)
 
-def combine_quadrant_responses(S_yxs, syn_yxs):
-    assert(S_yxs[0].shape[0] == TILES_Y)
-    assert(S_yxs[0].shape[1] == TILES_X)
-    assert(len(syn_yxs) == len(S_yxs))
-    assert(len(syn_yxs) == 4)
-    Sall_yx = np.zeros((TILES_Y * 2, TILES_X * 2, S_yxs[0].shape[2]))
-    for syn_yx, S_yx in zip(syn_yxs, S_yxs):
-        syn_y, syn_x = syn_yx
-        Sall_yx[syn_y::2, syn_x::2, :] = S_yx
-    return Sall_yx
+# def fit_taus(S_yxs, thold0, thold1, plot=False, plot_fname_pre=None, pyx=8):
 
-def respfunc(t, tau):
-    return 1 - np.exp(-t / tau)
+#     from scipy.optimize import curve_fit
 
-def fit_taus(S_yxs, thold0, thold1, plot=False, plot_fname_pre=None, pyx=8):
+#     taus = np.zeros((S_yxs.shape[0], S_yxs.shape[1]))
+#     Z_mins = np.zeros_like(taus)
+#     Z_maxs = np.zeros_like(taus)
 
-    from scipy.optimize import curve_fit
-
-    taus = np.zeros((S_yxs.shape[0], S_yxs.shape[1]))
-    Z_mins = np.zeros_like(taus)
-    Z_maxs = np.zeros_like(taus)
-
-    idx_start = int(np.round(thold0 / (thold0 + thold1) * S_yxs.shape[2]))
-    len_Z_on = S_yxs.shape[2] - idx_start
+#     idx_start = int(np.round(thold0 / (thold0 + thold1) * S_yxs.shape[2]))
+#     len_Z_on = S_yxs.shape[2] - idx_start
     
-    Z_ons = np.zeros((S_yxs.shape[0], S_yxs.shape[1], len_Z_on))
-    curves = np.zeros_like(Z_ons)
+#     Z_ons = np.zeros((S_yxs.shape[0], S_yxs.shape[1], len_Z_on))
+#     curves = np.zeros_like(Z_ons)
     
-    for ty in range(S_yxs.shape[0]):
-        for tx in range(S_yxs.shape[1]):
-            Z = S_yxs[ty,tx,:]
+#     for ty in range(S_yxs.shape[0]):
+#         for tx in range(S_yxs.shape[1]):
+#             Z = S_yxs[ty,tx,:]
             
-            # window and renormalize Z so it looks like a standard
-            # saturating exponential going 0 -> 1
+#             # window and renormalize Z so it looks like a standard
+#             # saturating exponential going 0 -> 1
 
-            # window
-            idx_start = int(np.round(thold0 / (thold0 + thold1) * len(Z)))
-            Z_off = Z[:idx_start]
-            Z_on = Z[idx_start:]
+#             # window
+#             idx_start = int(np.round(thold0 / (thold0 + thold1) * len(Z)))
+#             Z_off = Z[:idx_start]
+#             Z_on = Z[idx_start:]
     
-            t = np.linspace(0, thold1, len(Z_on))
+#             t = np.linspace(0, thold1, len(Z_on))
 
-            # shift and scale
-            Z_min = np.mean(Z_off)
-            Z_scaled = Z_on - Z_min
-            # assume signal is settled in second half of Z_on
-            Z_max = np.mean(Z_scaled[Z_scaled.shape[0] // 2:]) 
-            Z_scaled = Z_scaled / Z_max
-            Z_mins[ty, tx] = Z_min
-            Z_maxs[ty, tx] = Z_max
+#             # shift and scale
+#             Z_min = np.mean(Z_off)
+#             Z_scaled = Z_on - Z_min
+#             # assume signal is settled in second half of Z_on
+#             Z_max = np.mean(Z_scaled[Z_scaled.shape[0] // 2:]) 
+#             Z_scaled = Z_scaled / Z_max
+#             Z_mins[ty, tx] = Z_min
+#             Z_maxs[ty, tx] = Z_max
             
-            mean_off = np.mean(Z_off)
-            Z_on_settled = Z_on[Z_on.shape[0] // 2:]
-            mean_on = np.mean(Z_on_settled)
+#             mean_off = np.mean(Z_off)
+#             Z_on_settled = Z_on[Z_on.shape[0] // 2:]
+#             mean_on = np.mean(Z_on_settled)
 
-            # if the synapse's (linear) neurons actually responded
-            if np.abs(mean_on - mean_off) > .05 * mean_off: 
+#             # if the synapse's (linear) neurons actually responded
+#             if np.abs(mean_on - mean_off) > .05 * mean_off: 
 
-                popt, pcov = curve_fit(respfunc, t, Z_scaled)
-                taus[ty, tx] = popt[0]
+#                 popt, pcov = curve_fit(respfunc, t, Z_scaled)
+#                 taus[ty, tx] = popt[0]
                 
-                curves[ty, tx, :] = Z_max * respfunc(t, taus[ty, tx]) + Z_min
-                Z_ons[ty, tx] = Z_on
+#                 curves[ty, tx, :] = Z_max * respfunc(t, taus[ty, tx]) + Z_min
+#                 Z_ons[ty, tx] = Z_on
                 
-            # if they didn't don't try to estimate tau
-            else:
-                taus[ty, tx] = np.nan
+#             # if they didn't don't try to estimate tau
+#             else:
+#                 taus[ty, tx] = np.nan
             
-    if plot:
-        # histogram of taus
-        plt.figure()
-        taus_hist = taus[~np.isnan(taus)]
-        plt.hist(taus_hist.flatten(), bins=20)
-        plt.title('tau distribution\nmean = ' + str(np.mean(taus_hist)) + ' std = ' + str(np.std(taus_hist)))
-        plt.savefig(plot_fname_pre + '_tau_hist.png')
+#     if plot:
+#         # histogram of taus
+#         plt.figure()
+#         taus_hist = taus[~np.isnan(taus)]
+#         plt.hist(taus_hist.flatten(), bins=20)
+#         plt.title('tau distribution\nmean = ' + str(np.mean(taus_hist)) + ' std = ' + str(np.std(taus_hist)))
+#         plt.savefig(plot_fname_pre + '_tau_hist.png')
 
-        # imshow of tau locations
-        plt.figure()
-        plt.imshow(taus)
-        plt.savefig(plot_fname_pre + '_tau_locations.png')
-        plt.colorbar()
+#         # imshow of tau locations
+#         plt.figure()
+#         plt.imshow(taus)
+#         plt.savefig(plot_fname_pre + '_tau_locations.png')
+#         plt.colorbar()
 
-        # step response curve fits
-        plot_yx_data([Z_ons[:pyx, :pyx, :], curves[:pyx, :pyx, :]], mask=~np.isnan(taus), t=t)
-        plt.savefig(plot_fname_pre + '_curve_fits.png')
+#         # step response curve fits
+#         plot_yx_data([Z_ons[:pyx, :pyx, :], curves[:pyx, :pyx, :]], mask=~np.isnan(taus), t=t)
+#         plt.savefig(plot_fname_pre + '_curve_fits.png')
 
-    return taus
+#     return taus
 
-def process_to_taus(all_binned, all_linear):
-	collapsed_As = [collapse_multitrial(all_binned[k]) for k in all_binned]
-	syn_yx_list = [k for k in all_binned]
-	linear_list = [all_linear[k] for k in all_binned]
+# def process_to_taus(all_binned, all_linear):
+# 	collapsed_As = [collapse_multitrial(all_binned[k]) for k in all_binned]
+# 	syn_yx_list = [k for k in all_binned]
+# 	linear_list = [all_linear[k] for k in all_binned]
 
-	# combine data from quadrants
-	S_yxs = [get_syn_responses(A, linear) for A, linear in zip(collapsed_As, linear_list)]
-	Sall_yx = combine_quadrant_responses(S_yxs, syn_yx_list)
-	taus = fit_taus(Sall_yx, THOLD0, THOLD1, plot=False)
-	return taus
-
-def get_responses(all_binned, all_linear, thold0= THOLD0, thold1 = THOLD1):
-	collapsed_As = [collapse_multitrial(all_binned[k]) for k in all_binned]
-	syn_yx_list = [k for k in all_binned]
-	linear_list = [all_linear[k] for k in all_binned]
-
-	# combine data from quadrants
-	S_yxs = [get_syn_responses(A, linear) for A, linear in zip(collapsed_As, linear_list)]
-	Sall_yx = combine_quadrant_responses(S_yxs, syn_yx_list)
-
-	S = Sall_yx.reshape(32*32, -1)
-	
-	idx_start = int(np.round(thold0 / (thold0 + thold1) * S.shape[1]))
-	Z_off = S[:,:idx_start]
-	Z_on = S[:,idx_start:]
-    
-	t = np.linspace(0, thold1, Z_on.shape[1])
-
-	Z_min = np.mean(Z_off, axis = 1).reshape(-1,1)
-	Z_scaled = Z_on - Z_min
-	# assume signal is settled in second half of Z_on
-	Z_max = np.mean(Z_scaled[:,Z_scaled.shape[1] // 2:], axis = 1).reshape(-1,1)
-	Z_scaled = Z_scaled / Z_max
-	return Z_scaled
+# 	# combine data from quadrants
+# 	S_yxs = [get_syn_responses(A, linear) for A, linear in zip(collapsed_As, linear_list)]
+# 	Sall_yx = combine_quadrant_responses(S_yxs, syn_yx_list)
+# 	taus = fit_taus(Sall_yx, THOLD0, THOLD1, plot=False)
+# 	return taus
